@@ -5,12 +5,6 @@
 #  • Generate SoundTempo-style tone
 #  • Repeat the tone N times before playing / downloading
 # ------------------------------------------------------------------
-#!/usr/bin/env python
-# putt_backstroke_and_audio.py  –  backstroke model + repeatable audio tone
-# ------------------------------------------------------------------------
-#!/usr/bin/env python
-# putt_backstroke_and_audio.py  –  repeat‑loops + cm / inches toggle
-# ------------------------------------------------------------------
 
 from __future__ import annotations
 import io, pathlib, re, shutil, wave
