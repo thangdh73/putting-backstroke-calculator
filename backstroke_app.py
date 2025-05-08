@@ -304,14 +304,14 @@ st.subheader("Make a prediction & generate tone")
 colL, colR = st.columns(2)
 with colL:
     putt_len_m = st.number_input("Putt length (m)", 0.5, 20.0, 3.0, 0.1)
-    slope_pc   = st.slider("Slope at ball position (%)", 0.0, 20.0, 5.0, 0.1)
+    slope_pc   = st.number_input("Slope at ball position (%)", 0.0, 5.0, 2.5, 0.1)
     direction  = st.radio("Slope direction", ("Uphill", "Downhill"), horizontal=True)
 
 with colR:
     stimp_ft   = st.number_input("Green speed – Stimp (ft)", 6.0, 15.0, 10.0, 0.1)
-    tempo_bpm  = st.slider("Core Tempo (BPM)", 65, 120, 90,
+    tempo_bpm  = st.number_input("Core Tempo (BPM)", 65, 120, 90,
                            help="Downswing timing (BPM ↔ 30/BPM s)")
-    rhythm     = st.slider("Backswing Ratio", 1.8, 2.4, 2.1, 0.1)
+    rhythm     = st.number_input("Backswing Ratio", 1.8, 3.0, 2.1, 0.1)
     handedness = st.radio("Handedness", ["Right", "Left"], horizontal=True)
 
 if st.button("Predict & Play Tone", type="primary"):
