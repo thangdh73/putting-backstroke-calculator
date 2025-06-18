@@ -1,25 +1,36 @@
 #!/usr/bin/env python
-# backstroke_app.py  –  Excel-matched with SoundTempo option
+# putt_backstroke_and_audio.py  –  v2 with “Repeat count” option
+# ------------------------------------------------------------------
+#  • Predict backstroke length from workbook-trained model
+#  • Generate SoundTempo-style tone
+#  • Repeat the tone N times before playing / downloading
+# ------------------------------------------------------------------
 
+from __future__ import annotations
 import io, pathlib, re, shutil, wave
 from math import sqrt, sin, pi, exp
-import numpy as np
-import pandas as pd
-import streamlit as st
-from pydub import AudioSegment
-from scipy.interpolate import RegularGridInterpolator
-from pathlib import Path
+from typing import List
 
-# ── constants ──────────────────────────────
+import joblib, numpy as np, pandas as pd, streamlit as st
+from pydub import AudioSegment
+from sklearn.compose import ColumnTransformer
+from sklearn.ensemble import GradientBoostingRegressor
+from sklearn.impute import SimpleImputer
+from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import OneHotEncoder
+
+# ── paths & constants ────────────────────────────────────────────
 BASE_DIR   = pathlib.Path(__file__).parent
 DATA_DIR   = BASE_DIR / "data"
 EXCEL_PATH = DATA_DIR / "Extracted_Backstroke_Table.xlsx"
+MODEL_PATH = BASE_DIR / "backstroke_model.joblib"
+FRAME_PATH = BASE_DIR / "backstroke_data.parquet"
 
 FT_TO_M  = 0.3048
 M_TO_FT  = 3.280839895
 CM_TO_IN = 0.393700787
 
-# ── SoundTempo‑style tone generator ─────────
+# ── SoundTempo‑style tone generator ─────────────────────────────
 class ProfessionalPuttGenerator:
     def __init__(self):
         self.sample_rate = 44100
@@ -29,19 +40,25 @@ class ProfessionalPuttGenerator:
         self.max_velocity = 2.2
         self.min_velocity = 0.5
 
+    # ---------- physics -----------------------------------------
     def _velocity(self, dist_ft, stimp, slope_pc):
         d_m = dist_ft * FT_TO_M
         v = 0.36 * stimp * (1 - exp(-d_m / 9.5))
-        return float(np.clip(v * (1 + slope_pc * 0.003), self.min_velocity, self.max_velocity))
+        return float(np.clip(v * (1 + slope_pc * 0.003),
+                             self.min_velocity, self.max_velocity))
 
     def _swing(self, bpm, ratio, dist_ft, stimp, slope_pc):
         dsi = 30 / bpm
         back_t = dsi * ratio
         base = 6.5  # inches at 10‑ft putt
-        back_len = min(base * min(0.8 * sqrt(dist_ft / 10), 3.5), self.max_backswing_in)
-        return {"dsi_time": dsi, "backswing_time": back_t, "backswing_length_in": back_len,
+        back_len = min(base * min(0.8 * sqrt(dist_ft / 10), 3.5),
+                       self.max_backswing_in)
+        return {"dsi_time": dsi,
+                "backswing_time": back_t,
+                "backswing_length_in": back_len,
                 "required_velocity": self._velocity(dist_ft, stimp, slope_pc)}
 
+    # ---------- DSP ---------------------------------------------
     def _exp_chirp(self):
         t = np.linspace(0, self.impact_chirp_duration,
                         int(self.sample_rate * self.impact_chirp_duration), False)
@@ -59,10 +76,11 @@ class ProfessionalPuttGenerator:
     def generate(self, bpm, ratio, dist_ft, stimp, slope_pc, handed="right"):
         p = self._swing(bpm, ratio, dist_ft, stimp, slope_pc)
         back = self._sweep(p["backswing_time"], 420, 580)
-        down = self._sweep(p["dsi_time"], 580, 420)
+        down = self._sweep(p["dsi_time"],        580, 420)
         chirp = self._exp_chirp()
         beep  = self._sweep(self.backswing_beep_duration, 1500, 1500)
 
+        # ----- stereo panning (fixed‑length envelopes) ------------
         pan_back = np.linspace(1, 0, len(back)) if handed=="right" else np.linspace(0,1,len(back))
         pan_down = np.linspace(0, 1, len(down)) if handed=="right" else np.linspace(1,0,len(down))
 
@@ -77,6 +95,7 @@ class ProfessionalPuttGenerator:
         pk = max(np.abs(L).max(), np.abs(R).max()) or 1
         return L/pk, R/pk, p
 
+    # ---------- MP3/WAV export (FFmpeg optional) -----------------
     def to_audio_buffer(self, left, right):
         pcm = np.column_stack([(left*32767).astype(np.int16),
                                (right*32767).astype(np.int16)])
@@ -91,67 +110,55 @@ class ProfessionalPuttGenerator:
             wf.writeframes(pcm.tobytes())
         buf.seek(0); return buf, "audio/wav", ".wav"
 
-# ╭─────────────────────────────╮
-# │ Excel Grid Loader + Helper │
-# ╰─────────────────────────────╯
-@st.cache_data(show_spinner=False)
-def load_excel_grid(xlsx_file):
-    df = pd.read_excel(xlsx_file, sheet_name=0, index_col=0, dtype=str)
-    # Replace blanks or 'N/A' or anything non-numeric with np.nan
-    def clean_val(val):
-        val = str(val).strip()
-        if val == "" or val.upper() == "N/A":
-            return np.nan
-        try:
-            return float(val)
-        except Exception:
-            return np.nan
-    # Clean column headers and index
-    df.columns = [clean_val(c) for c in df.columns]
-    df.index = [clean_val(i) for i in df.index]
-    # Clean cell values
-    df = df.applymap(clean_val)
-    # Drop columns and rows that are all nan (Excel over-extends sometimes)
-    df = df.dropna(axis=1, how="all").dropna(axis=0, how="all")
-    return df
+# ── data‑model helpers (same as before, shortened for brevity) ──────────────
+def _normalise(s: str)->str: return str(s).replace("_"," ").replace("\u202f"," ").strip()
+HEAD_RX = re.compile(r"""stimp\s*(?P<stimp>\d+(?:\.\d+)?)\s*m?.*?(?P<dir>(?:up|down)hill)?""", re.I)
 
-def build_interpolator(df):
-    xs = np.array(df.index, dtype=float)
-    ys = np.array(df.columns, dtype=float)
-    zs = df.values.astype(float)
-    return RegularGridInterpolator((xs, ys), zs, bounds_error=False, fill_value=np.nan)
+def load_workbook(xlsx):
+    wb = pd.ExcelFile(xlsx); stacks=[]
+    for sh in wb.sheet_names:
+        first = _normalise(wb.parse(sh, nrows=1, header=None).iloc[0,0])
+        m = HEAD_RX.match(first);      hdr = None
+        if not m: continue
+        df = wb.parse(sh, header=None)
+        for i,v in df.iloc[:,0].items():
+            if _normalise(v).lower()=="putt length (m)": hdr=i; break
+        if hdr is None: continue
+        blk=df.iloc[hdr:]; blk.columns=blk.iloc[0]; blk=blk.iloc[1:]
+        long=blk.melt("Putt Length (m)",var_name="Elevation (cm)",value_name="Backstroke (cm)")
+        long["Stimp"]=float(m["stimp"]); long["Direction"]="Uphill" if (m["dir"] or "").lower().startswith("up") else "Downhill"
+        long["Elevation (cm)"]=pd.to_numeric(long["Elevation (cm)"],errors="coerce")
+        long["Backstroke (cm)"]=pd.to_numeric(long["Backstroke (cm)"],errors="coerce")
+        stacks.append(long.dropna(subset=["Backstroke (cm)"]))
+    return pd.concat(stacks, ignore_index=True) if stacks else pd.DataFrame()
 
-st.set_page_config(page_title="Backstroke Calculator + Sound", layout="centered")
-st.title("⛳ Backstroke Calculator (Excel-matched) + SoundTempo Tone")
+def build_model(df):
+    num=["Putt Length (m)","Stimp","Elevation (cm)"]; cat=["Direction"]
+    pre=ColumnTransformer([("num",SimpleImputer(strategy="median"),num),
+                           ("cat",Pipeline([("imp",SimpleImputer(strategy="most_frequent")),
+                                            ("ohe",OneHotEncoder(handle_unknown="ignore"))]),cat)])
+    return Pipeline([("pre",pre),("reg",GradientBoostingRegressor(random_state=42))])
 
-side = st.sidebar
-side.header("Load Excel Table")
-default_path = DATA_DIR / "Extracted_Backstroke_Table.xlsx"
-path_str = side.text_input("Path to Excel table:", str(default_path))
-uploaded = side.file_uploader("Or upload Excel file (.xlsx)", type=["xlsx"])
+@st.cache_resource(show_spinner=False)
+def get_model():
+    if MODEL_PATH.exists() and FRAME_PATH.exists():
+        return pd.read_parquet(FRAME_PATH), joblib.load(MODEL_PATH)
+    df=load_workbook(EXCEL_PATH); model=build_model(df).fit(
+        df[["Putt Length (m)","Stimp","Direction","Elevation (cm)"]], df["Backstroke (cm)"])
+    FRAME_PATH.write_bytes(df.to_parquet()); joblib.dump(model, MODEL_PATH)
+    return df, model
 
-if uploaded:
-    df = load_excel_grid(uploaded)
-elif Path(path_str).exists():
-    df = load_excel_grid(path_str)
-else:
-    df = None
+# ── Streamlit UI ────────────────────────────────────────────────────────────
+st.set_page_config("Backstroke + Tone Trainer", layout="centered")
+st.title("⛳ Backstroke Calculator + SoundTempo Tone")
 
-if df is None or df.empty:
-    st.warning("No Excel table found or table is empty. Please upload or specify a valid path.")
-    st.stop()
+data_df, model = get_model()
 
-interp = build_interpolator(df)
-side.success("Table loaded ✔")
-st.caption("Backstroke is a direct lookup/interpolation from the Excel grid. No ML is used.")
-
-# ╭─────────────────────────────╮
-# │ User Inputs                │
-# ╰─────────────────────────────╯
 c1,c2=st.columns(2)
 with c1:
-    putt_m   = st.number_input("Putt length (m)", float(df.index.min()), float(df.index.max()), float(df.index.min()), 0.1)
-    elev_cm  = st.number_input("Slope elevation (cm)", float(df.columns.min()), float(df.columns.max()), float(df.columns.min()), 1.0)
+    putt_m   = st.number_input("Putt length (m)",0.5,20.0,3.0,0.1)
+    slope_pc = st.number_input("Slope at ball (%)",0.0,5.0,2.5,0.1)
+    dirn     = st.radio("Slope direction",("Uphill","Downhill"),horizontal=True)
     unit     = st.selectbox("Display backstroke in",("cm","inches"))
 with c2:
     stimp_ft = st.number_input("Stimp (ft)",6.0,15.0,10.0,0.1)
@@ -160,32 +167,29 @@ with c2:
     hand     = st.radio("Handedness",("Right","Left"),horizontal=True)
     repeat_n = st.number_input("Repeat count",1,20,1)
 
-input_point = (putt_m, elev_cm)
-try:
-    back_cm = float(interp(input_point))
-except Exception as e:
-    st.error(f"Could not interpolate: {e}")
-    back_cm = np.nan
-
-if np.isnan(back_cm):
-    st.error("Input is outside the Excel grid or not enough data to interpolate.")
-else:
+if st.button("Predict & Play"):
+    # ---------- prediction -------------------------------------
+    elevation_cm = putt_m * slope_pc
+    X=pd.DataFrame([{
+        "Putt Length (m)":putt_m,
+        "Stimp":stimp_ft*FT_TO_M,
+        "Direction":dirn,
+        "Elevation (cm)":elevation_cm,
+    }])
+    back_cm=float(model.predict(X)[0])
     back_display = back_cm if unit=="cm" else back_cm*CM_TO_IN
     unit_label   = "cm" if unit=="cm" else "in"
-    is_exact = (putt_m in df.index) and (elev_cm in df.columns)
-    msg = "Exact Excel cell match" if is_exact else "Interpolated between cells"
-    st.metric(f"Backstroke length ({unit_label}) [{msg}]", f"{back_display:.2f}")
 
     # ---------- audio ------------------------------------------
     gen=ProfessionalPuttGenerator()
-    L,R,swing=gen.generate(tempo,ratio,putt_m*M_TO_FT,stimp_ft,0,hand.lower())
+    L,R,swing=gen.generate(tempo,ratio,putt_m*M_TO_FT,stimp_ft,slope_pc,hand.lower())
     if repeat_n>1: L,R=np.tile(L,repeat_n),np.tile(R,repeat_n)
     buf,mime,ext = gen.to_audio_buffer(L,R)
 
     # ---------- output -----------------------------------------
     st.markdown(f"""
-    **Backstroke:** `{back_display:.2f} {unit_label}`  
-    **Slope elevation used:** `{elev_cm:.2f} cm`  
+    **Predicted backstroke:** `{back_display:.2f} {unit_label}`  
+    **Elevation used:** `{elevation_cm:.2f} cm`  
 
     **Audio timings**  
     • Backswing = {swing['backswing_time']:.3f} s  
@@ -197,7 +201,4 @@ else:
     st.download_button("Download audio",buf,
                        file_name=f"putt_{putt_m:.1f}m{ext}",mime=mime)
 
-with st.expander("Show Lookup Table / Preview"):
-    st.dataframe(df.style.format("{:.1f}"))
-
-st.caption("If your inputs match Excel cell positions, this will return exactly the Excel value. For in-between values, bilinear interpolation is used. Blanks and 'N/A' are handled automatically.")
+st.caption("Backstroke model with cm / inch toggle • Repeatable SoundTempo practice tone")
