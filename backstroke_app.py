@@ -169,11 +169,12 @@ with c2:
 
 if st.button("Predict & Play"):
     # ---------- prediction -------------------------------------
+    elevation_cm = putt_m * slope_pc
     X=pd.DataFrame([{
         "Putt Length (m)":putt_m,
         "Stimp":stimp_ft*FT_TO_M,
         "Direction":dirn,
-        "Elevation (cm)":putt_m*slope_pc,
+        "Elevation (cm)":elevation_cm,
     }])
     back_cm=float(model.predict(X)[0])
     back_display = back_cm if unit=="cm" else back_cm*CM_TO_IN
@@ -188,6 +189,7 @@ if st.button("Predict & Play"):
     # ---------- output -----------------------------------------
     st.markdown(f"""
     **Predicted backstroke:** `{back_display:.2f} {unit_label}`  
+    **Elevation used:** `{elevation_cm:.2f} cm`  
 
     **Audio timings**  
     • Backswing = {swing['backswing_time']:.3f} s  
