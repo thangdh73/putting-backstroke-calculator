@@ -5,7 +5,7 @@
 #  • Generate SoundTempo-style tone (repeatable)
 # ------------------------------------------------------------------
 
-import io, pathlib, re, shutil, wave
+import io, pathlib, shutil, wave
 from math import sqrt, sin, pi, exp
 import numpy as np
 import pandas as pd
@@ -100,14 +100,19 @@ class ProfessionalPuttGenerator:
 # ╰─────────────────────────────╯
 @st.cache_data(show_spinner=False)
 def load_excel_grid(xlsx_file):
+    # Load, strip, and convert headers/index robustly
     df = pd.read_excel(xlsx_file, sheet_name=0, index_col=0)
     def _make_float(val):
-        import re
-        try: return float(re.sub(r"[^\d.]+", "", str(val)))
-        except: return np.nan
+        try:
+            return float(str(val).replace("cm","").replace("m","").replace("–","-").replace(",","").strip())
+        except:
+            return np.nan
     df.columns = [_make_float(c) for c in df.columns]
     df.index = [_make_float(i) for i in df.index]
     df = df.replace("N/A", np.nan)
+    # Remove any columns/index that aren't float (NaN) or are all NaN
+    df = df.loc[~np.isnan(df.index)]
+    df = df[[c for c in df.columns if not np.isnan(c)]]
     return df
 
 def build_interpolator(df):
