@@ -5,17 +5,16 @@
 #  • Generate SoundTempo-style tone (repeatable)
 # ------------------------------------------------------------------
 
-import io, pathlib, shutil, wave
+import io, pathlib, re, shutil, wave
 from math import sqrt, sin, pi, exp
 import numpy as np
 import pandas as pd
 import streamlit as st
 from pydub import AudioSegment
 from scipy.interpolate import RegularGridInterpolator
-from pathlib import Path
 
 # ── constants ──────────────────────────────
-BASE_DIR   = pathlib.Path(__file__).parent
+BASE_DIR   = pathlib.Path(__file__).parent.resolve()
 DATA_DIR   = BASE_DIR / "data"
 EXCEL_PATH = DATA_DIR / "Extracted_Backstroke_Table.xlsx"
 
@@ -100,19 +99,14 @@ class ProfessionalPuttGenerator:
 # ╰─────────────────────────────╯
 @st.cache_data(show_spinner=False)
 def load_excel_grid(xlsx_file):
-    # Load, strip, and convert headers/index robustly
     df = pd.read_excel(xlsx_file, sheet_name=0, index_col=0)
     def _make_float(val):
-        try:
-            return float(str(val).replace("cm","").replace("m","").replace("–","-").replace(",","").strip())
-        except:
-            return np.nan
+        import re
+        try: return float(re.sub(r"[^\d.]+", "", str(val)))
+        except: return np.nan
     df.columns = [_make_float(c) for c in df.columns]
     df.index = [_make_float(i) for i in df.index]
     df = df.replace("N/A", np.nan)
-    # Remove any columns/index that aren't float (NaN) or are all NaN
-    df = df.loc[~np.isnan(df.index)]
-    df = df[[c for c in df.columns if not np.isnan(c)]]
     return df
 
 def build_interpolator(df):
@@ -126,19 +120,26 @@ st.title("⛳ Backstroke Calculator (Excel-matched) + SoundTempo Tone")
 
 side = st.sidebar
 side.header("Load Excel Table")
+# Always use repo-root/data/Extracted_Backstroke_Table.xlsx
 default_path = DATA_DIR / "Extracted_Backstroke_Table.xlsx"
 path_str = side.text_input("Path to Excel table:", str(default_path))
 uploaded = side.file_uploader("Or upload Excel file (.xlsx)", type=["xlsx"])
 
+# --------- Try upload first, then file in path ---------
 if uploaded:
     df = load_excel_grid(uploaded)
 elif Path(path_str).exists():
     df = load_excel_grid(path_str)
 else:
-    df = None
+    st.warning(
+        f"No Excel table found. Please upload or specify a valid path.\n"
+        f"Tried path: {path_str}\n"
+        f"Current working directory: {Path.cwd()}\n"
+    )
+    st.stop()
 
 if df is None or df.empty:
-    st.warning("No Excel table found. Please upload or specify a valid path.")
+    st.warning("Loaded Excel file is empty or not valid.")
     st.stop()
 
 interp = build_interpolator(df)
