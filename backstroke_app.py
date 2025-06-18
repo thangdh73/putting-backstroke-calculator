@@ -1,9 +1,5 @@
 #!/usr/bin/env python
-# backstroke_app.py – Excel-matched with SoundTempo audio
-# --------------------------------------------------------
-# • Predict backstroke length by grid lookup/interpolation
-# • Generate SoundTempo-style practice tone
-# • Repeat audio as needed
+# backstroke_app.py  –  Excel-matched with SoundTempo option
 
 import io, pathlib, re, shutil, wave
 from math import sqrt, sin, pi, exp
@@ -12,8 +8,9 @@ import pandas as pd
 import streamlit as st
 from pydub import AudioSegment
 from scipy.interpolate import RegularGridInterpolator
+from pathlib import Path
 
-# --------- Paths & Constants ----------
+# ── constants ──────────────────────────────
 BASE_DIR   = pathlib.Path(__file__).parent
 DATA_DIR   = BASE_DIR / "data"
 EXCEL_PATH = DATA_DIR / "Extracted_Backstroke_Table.xlsx"
@@ -22,7 +19,7 @@ FT_TO_M  = 0.3048
 M_TO_FT  = 3.280839895
 CM_TO_IN = 0.393700787
 
-# --------- SoundTempo-style generator ----------
+# ── SoundTempo‑style tone generator ─────────
 class ProfessionalPuttGenerator:
     def __init__(self):
         self.sample_rate = 44100
@@ -94,30 +91,36 @@ class ProfessionalPuttGenerator:
             wf.writeframes(pcm.tobytes())
         buf.seek(0); return buf, "audio/wav", ".wav"
 
-# --------- Excel Grid Loader (robust) ----------
+# ╭─────────────────────────────╮
+# │ Excel Grid Loader + Helper │
+# ╰─────────────────────────────╯
 @st.cache_data(show_spinner=False)
 def load_excel_grid(xlsx_file):
-    df = pd.read_excel(xlsx_file, sheet_name=0, index_col=0)
-    def _make_float(val):
-        import re
-        try: return float(re.sub(r"[^\d.]+", "", str(val)))
-        except: return np.nan
-    df.columns = [_make_float(c) for c in df.columns]
-    df.index = [_make_float(i) for i in df.index]
-    for col in df.columns:
-        df[col] = pd.to_numeric(df[col], errors='coerce')
-    df = df.replace("N/A", np.nan)
-    df = df.dropna(axis=1, how='all')
-    df = df.dropna(axis=0, how='all')
+    df = pd.read_excel(xlsx_file, sheet_name=0, index_col=0, dtype=str)
+    # Replace blanks or 'N/A' or anything non-numeric with np.nan
+    def clean_val(val):
+        val = str(val).strip()
+        if val == "" or val.upper() == "N/A":
+            return np.nan
+        try:
+            return float(val)
+        except Exception:
+            return np.nan
+    # Clean column headers and index
+    df.columns = [clean_val(c) for c in df.columns]
+    df.index = [clean_val(i) for i in df.index]
+    # Clean cell values
+    df = df.applymap(clean_val)
+    # Drop columns and rows that are all nan (Excel over-extends sometimes)
+    df = df.dropna(axis=1, how="all").dropna(axis=0, how="all")
     return df
 
 def build_interpolator(df):
-    xs = df.index.to_numpy()
-    ys = df.columns.to_numpy()
-    zs = df.astype(float).to_numpy()
+    xs = np.array(df.index, dtype=float)
+    ys = np.array(df.columns, dtype=float)
+    zs = df.values.astype(float)
     return RegularGridInterpolator((xs, ys), zs, bounds_error=False, fill_value=np.nan)
 
-# --------- Streamlit UI ----------
 st.set_page_config(page_title="Backstroke Calculator + Sound", layout="centered")
 st.title("⛳ Backstroke Calculator (Excel-matched) + SoundTempo Tone")
 
@@ -127,22 +130,25 @@ default_path = DATA_DIR / "Extracted_Backstroke_Table.xlsx"
 path_str = side.text_input("Path to Excel table:", str(default_path))
 uploaded = side.file_uploader("Or upload Excel file (.xlsx)", type=["xlsx"])
 
-df = None
 if uploaded:
     df = load_excel_grid(uploaded)
-elif pathlib.Path(path_str).exists():
+elif Path(path_str).exists():
     df = load_excel_grid(path_str)
+else:
+    df = None
 
 if df is None or df.empty:
-    st.warning("No Excel table found. Please upload or specify a valid path.")
+    st.warning("No Excel table found or table is empty. Please upload or specify a valid path.")
     st.stop()
 
 interp = build_interpolator(df)
 side.success("Table loaded ✔")
 st.caption("Backstroke is a direct lookup/interpolation from the Excel grid. No ML is used.")
 
-# ---- User Inputs ----
-c1, c2 = st.columns(2)
+# ╭─────────────────────────────╮
+# │ User Inputs                │
+# ╰─────────────────────────────╯
+c1,c2=st.columns(2)
 with c1:
     putt_m   = st.number_input("Putt length (m)", float(df.index.min()), float(df.index.max()), float(df.index.min()), 0.1)
     elev_cm  = st.number_input("Slope elevation (cm)", float(df.columns.min()), float(df.columns.max()), float(df.columns.min()), 1.0)
@@ -154,11 +160,15 @@ with c2:
     hand     = st.radio("Handedness",("Right","Left"),horizontal=True)
     repeat_n = st.number_input("Repeat count",1,20,1)
 
-# ---- Interpolation & Result ----
 input_point = (putt_m, elev_cm)
-back_cm = float(interp(input_point))
+try:
+    back_cm = float(interp(input_point))
+except Exception as e:
+    st.error(f"Could not interpolate: {e}")
+    back_cm = np.nan
+
 if np.isnan(back_cm):
-    st.error("Input is outside the Excel grid—no value to interpolate.")
+    st.error("Input is outside the Excel grid or not enough data to interpolate.")
 else:
     back_display = back_cm if unit=="cm" else back_cm*CM_TO_IN
     unit_label   = "cm" if unit=="cm" else "in"
@@ -166,13 +176,13 @@ else:
     msg = "Exact Excel cell match" if is_exact else "Interpolated between cells"
     st.metric(f"Backstroke length ({unit_label}) [{msg}]", f"{back_display:.2f}")
 
-    # ---------- audio ----------
+    # ---------- audio ------------------------------------------
     gen=ProfessionalPuttGenerator()
     L,R,swing=gen.generate(tempo,ratio,putt_m*M_TO_FT,stimp_ft,0,hand.lower())
     if repeat_n>1: L,R=np.tile(L,repeat_n),np.tile(R,repeat_n)
     buf,mime,ext = gen.to_audio_buffer(L,R)
 
-    # ---------- output ----------
+    # ---------- output -----------------------------------------
     st.markdown(f"""
     **Backstroke:** `{back_display:.2f} {unit_label}`  
     **Slope elevation used:** `{elev_cm:.2f} cm`  
@@ -190,4 +200,4 @@ else:
 with st.expander("Show Lookup Table / Preview"):
     st.dataframe(df.style.format("{:.1f}"))
 
-st.caption("If your inputs match Excel cell positions, this will return exactly the Excel value. For in-between values, bilinear interpolation is used.")
+st.caption("If your inputs match Excel cell positions, this will return exactly the Excel value. For in-between values, bilinear interpolation is used. Blanks and 'N/A' are handled automatically.")
