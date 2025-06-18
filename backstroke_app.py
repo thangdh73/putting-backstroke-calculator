@@ -1,20 +1,17 @@
 #!/usr/bin/env python
 # backstroke_app.py  –  Excel-matched with SoundTempo option
-# ------------------------------------------------------------------
-#  • Predict backstroke length directly from Excel lookup/interpolation
-#  • Generate SoundTempo-style tone (repeatable)
-# ------------------------------------------------------------------
 
-import io, pathlib, re, shutil, wave
+import io, re, shutil, wave
 from math import sqrt, sin, pi, exp
 import numpy as np
 import pandas as pd
 import streamlit as st
 from pydub import AudioSegment
 from scipy.interpolate import RegularGridInterpolator
+from pathlib import Path
 
 # ── constants ──────────────────────────────
-BASE_DIR   = pathlib.Path(__file__).parent.resolve()
+BASE_DIR   = Path(__file__).parent
 DATA_DIR   = BASE_DIR / "data"
 EXCEL_PATH = DATA_DIR / "Extracted_Backstroke_Table.xlsx"
 
@@ -101,9 +98,10 @@ class ProfessionalPuttGenerator:
 def load_excel_grid(xlsx_file):
     df = pd.read_excel(xlsx_file, sheet_name=0, index_col=0)
     def _make_float(val):
-        import re
-        try: return float(re.sub(r"[^\d.]+", "", str(val)))
-        except: return np.nan
+        try:
+            return float(re.sub(r"[^\d.]+", "", str(val)))
+        except:
+            return np.nan
     df.columns = [_make_float(c) for c in df.columns]
     df.index = [_make_float(i) for i in df.index]
     df = df.replace("N/A", np.nan)
@@ -120,12 +118,10 @@ st.title("⛳ Backstroke Calculator (Excel-matched) + SoundTempo Tone")
 
 side = st.sidebar
 side.header("Load Excel Table")
-# Always use repo-root/data/Extracted_Backstroke_Table.xlsx
 default_path = DATA_DIR / "Extracted_Backstroke_Table.xlsx"
 path_str = side.text_input("Path to Excel table:", str(default_path))
 uploaded = side.file_uploader("Or upload Excel file (.xlsx)", type=["xlsx"])
 
-# --------- Try upload first, then file in path ---------
 if uploaded:
     df = load_excel_grid(uploaded)
 elif Path(path_str).exists():
@@ -139,7 +135,7 @@ else:
     st.stop()
 
 if df is None or df.empty:
-    st.warning("Loaded Excel file is empty or not valid.")
+    st.warning("Excel table is empty or not loaded.")
     st.stop()
 
 interp = build_interpolator(df)
@@ -149,34 +145,35 @@ st.caption("Backstroke is a direct lookup/interpolation from the Excel grid. No 
 # ╭─────────────────────────────╮
 # │ User Inputs                │
 # ╰─────────────────────────────╯
-c1,c2=st.columns(2)
+c1, c2 = st.columns(2)
 with c1:
     putt_m   = st.number_input("Putt length (m)", float(df.index.min()), float(df.index.max()), float(df.index.min()), 0.1)
     elev_cm  = st.number_input("Slope elevation (cm)", float(df.columns.min()), float(df.columns.max()), float(df.columns.min()), 1.0)
-    unit     = st.selectbox("Display backstroke in",("cm","inches"))
+    unit     = st.selectbox("Display backstroke in", ("cm", "inches"))
 with c2:
-    stimp_ft = st.number_input("Stimp (ft)",6.0,15.0,10.0,0.1)
-    tempo    = st.number_input("Core Tempo (BPM)",65,120,90)
-    ratio    = st.number_input("Backswing Ratio",1.8,3.0,2.1,0.1)
-    hand     = st.radio("Handedness",("Right","Left"),horizontal=True)
-    repeat_n = st.number_input("Repeat count",1,20,1)
+    stimp_ft = st.number_input("Stimp (ft)", 6.0, 15.0, 10.0, 0.1)
+    tempo    = st.number_input("Core Tempo (BPM)", 65, 120, 90)
+    ratio    = st.number_input("Backswing Ratio", 1.8, 3.0, 2.1, 0.1)
+    hand     = st.radio("Handedness", ("Right", "Left"), horizontal=True)
+    repeat_n = st.number_input("Repeat count", 1, 20, 1)
 
 input_point = (putt_m, elev_cm)
 back_cm = float(interp(input_point))
 if np.isnan(back_cm):
     st.error("Input is outside the Excel grid—no value to interpolate.")
 else:
-    back_display = back_cm if unit=="cm" else back_cm*CM_TO_IN
-    unit_label   = "cm" if unit=="cm" else "in"
+    back_display = back_cm if unit == "cm" else back_cm * CM_TO_IN
+    unit_label = "cm" if unit == "cm" else "in"
     is_exact = (putt_m in df.index) and (elev_cm in df.columns)
     msg = "Exact Excel cell match" if is_exact else "Interpolated between cells"
     st.metric(f"Backstroke length ({unit_label}) [{msg}]", f"{back_display:.2f}")
 
     # ---------- audio ------------------------------------------
-    gen=ProfessionalPuttGenerator()
-    L,R,swing=gen.generate(tempo,ratio,putt_m*M_TO_FT,stimp_ft,0,hand.lower())
-    if repeat_n>1: L,R=np.tile(L,repeat_n),np.tile(R,repeat_n)
-    buf,mime,ext = gen.to_audio_buffer(L,R)
+    gen = ProfessionalPuttGenerator()
+    L, R, swing = gen.generate(tempo, ratio, putt_m*M_TO_FT, stimp_ft, 0, hand.lower())
+    if repeat_n > 1:
+        L, R = np.tile(L, repeat_n), np.tile(R, repeat_n)
+    buf, mime, ext = gen.to_audio_buffer(L, R)
 
     # ---------- output -----------------------------------------
     st.markdown(f"""
@@ -189,9 +186,9 @@ else:
     • Ratio     = {ratio:.2f}  
     • Repeat    = {repeat_n}×
     """)
-    st.audio(buf,format=mime)
-    st.download_button("Download audio",buf,
-                       file_name=f"putt_{putt_m:.1f}m{ext}",mime=mime)
+    st.audio(buf, format=mime)
+    st.download_button("Download audio", buf,
+                       file_name=f"putt_{putt_m:.1f}m{ext}", mime=mime)
 
 with st.expander("Show Lookup Table / Preview"):
     st.dataframe(df.style.format("{:.1f}"))
