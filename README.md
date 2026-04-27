@@ -6,6 +6,7 @@ Web app for predicting putt backstroke length and generating a repeatable SoundT
 
 ```bash
 python3 -m pip install --user -r requirements.txt
+python3 -m pip install --user -r requirements-streamlit.txt
 python3 -m streamlit run backstroke_app_new.py
 ```
 
