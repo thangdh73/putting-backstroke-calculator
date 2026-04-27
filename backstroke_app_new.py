@@ -7,11 +7,11 @@
 # ------------------------------------------------------------------
 
 from __future__ import annotations
-import io, pathlib, re, shutil, wave
+import io, os, pathlib, re, shutil, sqlite3, wave
 from math import sqrt, sin, pi, exp
 from typing import List
 
-import joblib, numpy as np, pandas as pd, streamlit as st
+import numpy as np, pandas as pd, streamlit as st
 from pydub import AudioSegment
 from sklearn.compose import ColumnTransformer
 from sklearn.ensemble import GradientBoostingRegressor
@@ -25,6 +25,10 @@ DATA_DIR   = BASE_DIR / "data"
 EXCEL_PATH = DATA_DIR / "Extracted_Backstroke_Table.xlsx"
 MODEL_PATH = BASE_DIR / "backstroke_model.joblib"
 FRAME_PATH = BASE_DIR / "backstroke_data.parquet"
+SQLITE_PATH = pathlib.Path(
+    os.environ.get("BACKSTROKE_SQLITE_PATH", BASE_DIR / "backstroke_data.sqlite")
+).expanduser()
+TABLE_NAME = "backstroke_observations"
 
 FT_TO_M  = 0.3048
 M_TO_FT  = 3.280839895
@@ -139,13 +143,73 @@ def build_model(df):
                                             ("ohe",OneHotEncoder(handle_unknown="ignore"))]),cat)])
     return Pipeline([("pre",pre),("reg",GradientBoostingRegressor(random_state=42))])
 
+def _prepare_backstroke_frame(df: pd.DataFrame) -> pd.DataFrame:
+    expected = ["Putt Length (m)", "Stimp", "Direction", "Elevation (cm)", "Backstroke (cm)"]
+    missing = [column for column in expected if column not in df.columns]
+    if missing:
+        raise ValueError(f"Backstroke data is missing columns: {', '.join(missing)}")
+    clean = df[expected].copy()
+    for column in ["Putt Length (m)", "Stimp", "Elevation (cm)", "Backstroke (cm)"]:
+        clean[column] = pd.to_numeric(clean[column], errors="coerce")
+    clean["Direction"] = clean["Direction"].astype(str)
+    clean = clean.dropna(subset=expected)
+    if clean.empty:
+        raise ValueError("Backstroke data source contains no usable rows.")
+    return clean
+
+def _seed_frame() -> pd.DataFrame:
+    if FRAME_PATH.exists():
+        return _prepare_backstroke_frame(pd.read_parquet(FRAME_PATH))
+    if EXCEL_PATH.exists():
+        return _prepare_backstroke_frame(load_workbook(EXCEL_PATH))
+    raise FileNotFoundError(
+        "No SQL database or seed data found. Set BACKSTROKE_SQLITE_PATH to a "
+        "SQLite database containing the backstroke_observations table."
+    )
+
+@st.cache_resource(show_spinner=False)
+def ensure_database(db_path: str) -> str:
+    path = pathlib.Path(db_path).expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(path) as conn:
+        table_exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (TABLE_NAME,),
+        ).fetchone()
+        row_count = 0
+        if table_exists:
+            row_count = conn.execute(f'SELECT COUNT(*) FROM "{TABLE_NAME}"').fetchone()[0]
+        if not table_exists or row_count == 0:
+            _seed_frame().to_sql(TABLE_NAME, conn, if_exists="replace", index=False)
+        conn.execute(
+            f'CREATE INDEX IF NOT EXISTS idx_{TABLE_NAME}_features '
+            f'ON "{TABLE_NAME}" ("Putt Length (m)", "Stimp", "Direction", "Elevation (cm)")'
+        )
+    return str(path)
+
+@st.cache_data(show_spinner=False)
+def load_backstroke_data(db_path: str) -> pd.DataFrame:
+    with sqlite3.connect(db_path) as conn:
+        df = pd.read_sql_query(
+            f'''
+            SELECT
+                "Putt Length (m)",
+                "Stimp",
+                "Direction",
+                "Elevation (cm)",
+                "Backstroke (cm)"
+            FROM "{TABLE_NAME}"
+            ''',
+            conn,
+        )
+    return _prepare_backstroke_frame(df)
+
 @st.cache_resource(show_spinner=False)
 def get_model():
-    if MODEL_PATH.exists() and FRAME_PATH.exists():
-        return pd.read_parquet(FRAME_PATH), joblib.load(MODEL_PATH)
-    df=load_workbook(EXCEL_PATH); model=build_model(df).fit(
+    db_path = ensure_database(str(SQLITE_PATH))
+    df = load_backstroke_data(db_path)
+    model=build_model(df).fit(
         df[["Putt Length (m)","Stimp","Direction","Elevation (cm)"]], df["Backstroke (cm)"])
-    FRAME_PATH.write_bytes(df.to_parquet()); joblib.dump(model, MODEL_PATH)
     return df, model
 
 # ── Streamlit UI ────────────────────────────────────────────────────────────
@@ -153,6 +217,7 @@ st.set_page_config("Backstroke + Tone Trainer", layout="centered")
 st.title("⛳ Backstroke Calculator + SoundTempo Tone")
 
 data_df, model = get_model()
+st.caption(f"Backstroke model trained from SQL table `{TABLE_NAME}`.")
 
 c1,c2=st.columns(2)
 with c1:
@@ -187,11 +252,11 @@ if st.button("Predict & Play"):
 
     # ---------- output -----------------------------------------
     st.markdown(f"""
-    **Predicted backstroke:** `{back_display:.2f} {unit_label}`  
+    **Predicted backstroke:** `{back_display:.2f} {unit_label}`  
 
     **Audio timings**  
-    • Backswing = {swing['backswing_time']:.3f} s  
-    • Downswing = {swing['dsi_time']:.3f} s  
+    • Backswing = {swing['backswing_time']:.3f} s  
+    • Downswing = {swing['dsi_time']:.3f} s  
     • Ratio     = {ratio:.2f}  
     • Repeat    = {repeat_n}×
     """)

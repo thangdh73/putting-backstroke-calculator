@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Backstroke Calculator + SoundTempo Tone</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <p class="eyebrow">SQL-backed web app</p>
+        <h1>Backstroke Calculator + SoundTempo Tone</h1>
+        <p>
+          Predict putt backstroke length from the SQL dataset and generate a
+          repeatable practice tone directly in the browser.
+        </p>
+      </section>
+
+      <form id="calculator" class="card">
+        <div class="grid">
+          <label>
+            Putt length (m)
+            <input name="putt_m" type="number" min="0.5" max="20" step="0.1" value="3.0" required />
+          </label>
+          <label>
+            Slope at ball (%)
+            <input name="slope_pc" type="number" min="0" max="5" step="0.1" value="2.5" required />
+          </label>
+          <label>
+            Slope direction
+            <select name="direction">
+              <option>Uphill</option>
+              <option>Downhill</option>
+            </select>
+          </label>
+          <label>
+            Display backstroke in
+            <select name="unit">
+              <option value="cm">cm</option>
+              <option value="inches">inches</option>
+            </select>
+          </label>
+          <label>
+            Stimp (ft)
+            <input name="stimp_ft" type="number" min="6" max="16" step="any" value="10.0" required />
+          </label>
+          <label>
+            Target roll past hole
+            <select name="target_roll_cm">
+              <option value="30">30 cm</option>
+              <option value="15">15 cm</option>
+            </select>
+          </label>
+          <label>
+            Core Tempo (BPM)
+            <input name="tempo" type="number" min="65" max="120" step="1" value="90" required />
+          </label>
+          <label>
+            Backswing Ratio
+            <input name="ratio" type="number" min="1.8" max="3" step="0.1" value="2.1" required />
+          </label>
+          <label>
+            Handedness
+            <select name="handedness">
+              <option value="right">Right</option>
+              <option value="left">Left</option>
+            </select>
+          </label>
+          <label>
+            Repeat count
+            <input name="repeat_n" type="number" min="1" max="20" step="1" value="1" required />
+          </label>
+        </div>
+        <button type="submit">Predict &amp; Play</button>
+        <p id="status" class="status" role="status"></p>
+      </form>
+
+      <section id="result" class="card result hidden" aria-live="polite">
+        <h2>Prediction</h2>
+        <p class="metric"><span id="backstroke"></span></p>
+        <dl>
+          <div>
+            <dt>Elevation used</dt>
+            <dd id="elevation"></dd>
+          </div>
+          <div>
+            <dt>Target roll</dt>
+            <dd id="target-roll"></dd>
+          </div>
+          <div>
+            <dt>Backswing</dt>
+            <dd id="backswing"></dd>
+          </div>
+          <div>
+            <dt>Downswing</dt>
+            <dd id="downswing"></dd>
+          </div>
+          <div>
+            <dt>Repeat</dt>
+            <dd id="repeat"></dd>
+          </div>
+          <div>
+            <dt>Lookup method</dt>
+            <dd id="method"></dd>
+          </div>
+        </dl>
+        <audio id="audio" controls></audio>
+        <a id="download" class="download" download="putt-tone.wav">Download audio</a>
+      </section>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>
