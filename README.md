@@ -1,6 +1,6 @@
 # Putting Backstroke Calculator
 
-Streamlit web app for predicting putt backstroke length and generating a repeatable SoundTempo-style practice tone.
+Web app for predicting putt backstroke length and generating a repeatable SoundTempo-style practice tone.
 
 ## Run locally
 
@@ -11,7 +11,24 @@ python3 -m streamlit run backstroke_app_new.py
 
 The app uses SQLite by default at `backstroke_data.sqlite`. On first run, it seeds the SQL table from the existing repository data.
 
-## Free web deployment
+## Vercel deployment
+
+This repository includes a Vercel-compatible web app:
+
+- `public/` serves the static calculator UI from Vercel's CDN.
+- `api/predict.py` runs as a Python serverless function.
+- `data/backstroke_observations.sqlite` stores the backstroke observations used by the API.
+- `backstroke_app_new.py` remains the Streamlit version for local development.
+
+Deploy with:
+
+```bash
+npx vercel --prod
+```
+
+The Vercel app keeps the prediction flow and SoundTempo tone generation. No secrets are required.
+
+## Streamlit Community Cloud deployment
 
 Use Streamlit Community Cloud for the free hosted deployment. Vercel is optimized for static apps and serverless web functions, while this app needs Streamlit's long-running Python server and websocket connection.
 
