@@ -6,6 +6,7 @@ const elevation = document.querySelector("#elevation");
 const backswing = document.querySelector("#backswing");
 const downswing = document.querySelector("#downswing");
 const repeat = document.querySelector("#repeat");
+const targetRoll = document.querySelector("#target-roll");
 const method = document.querySelector("#method");
 const player = document.querySelector("#audio");
 const download = document.querySelector("#download");
