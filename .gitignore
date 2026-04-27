@@ -1,3 +1,4 @@
 backstroke_data.sqlite
+__pycache__/
 backstroke_data.sqlite-*
 backstroke_model.joblib
