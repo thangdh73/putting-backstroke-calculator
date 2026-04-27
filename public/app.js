@@ -6,6 +6,7 @@ const elevation = document.querySelector("#elevation");
 const backswing = document.querySelector("#backswing");
 const downswing = document.querySelector("#downswing");
 const repeat = document.querySelector("#repeat");
+const method = document.querySelector("#method");
 const player = document.querySelector("#audio");
 const download = document.querySelector("#download");
 const submit = form.querySelector("button[type='submit']");
@@ -41,9 +42,11 @@ form.addEventListener("submit", async (event) => {
 
     predicted.textContent = `${data.predicted_backstroke.toFixed(2)} ${data.unit_label}`;
     elevation.textContent = `${data.elevation_cm.toFixed(2)} cm`;
+    targetRoll.textContent = `${data.target_roll_cm.toFixed(0)} cm`;
     backswing.textContent = `${data.swing.backswing_time.toFixed(3)} s`;
     downswing.textContent = `${data.swing.dsi_time.toFixed(3)} s`;
     repeat.textContent = `${data.repeat_count}x`;
+    method.textContent = data.method;
 
     const src = `data:${data.audio.mime};base64,${data.audio.base64}`;
     player.src = src;

@@ -37,49 +37,110 @@ def _clamp(value: float, lower: float, upper: float) -> float:
     return max(lower, min(upper, value))
 
 
-def _predict_backstroke(putt_m: float, stimp_ft: float, direction: str, elevation_cm: float) -> float:
+def _bounds(values: list[float], target: float) -> tuple[float, float]:
+    if target <= values[0]:
+        return values[0], values[0]
+    if target >= values[-1]:
+        return values[-1], values[-1]
+    for lower, upper in zip(values, values[1:]):
+        if lower <= target <= upper:
+            return lower, upper
+    return values[-1], values[-1]
+
+
+def _lerp(lower: float, upper: float, ratio: float) -> float:
+    return lower + (upper - lower) * ratio
+
+
+def _ratio(lower: float, upper: float, target: float) -> float:
+    return 0.0 if lower == upper else (target - lower) / (upper - lower)
+
+
+def _predict_backstroke(
+    putt_m: float,
+    stimp_ft: float,
+    direction: str,
+    target_roll_cm: float,
+    elevation_cm: float,
+) -> tuple[float, str]:
     stimp_m = stimp_ft * FT_TO_M
     direction = "Uphill" if str(direction).lower().startswith("up") else "Downhill"
 
     with sqlite3.connect(DB_PATH) as conn:
-        rows = conn.execute(
+        exact = conn.execute(
+            f'''
+            SELECT "Backstroke (cm)"
+            FROM "{TABLE_NAME}"
+            WHERE "Direction" = ?
+              AND ABS("Target Roll (cm)" - ?) < 0.000001
+              AND ABS("Putt Length (m)" - ?) < 0.000001
+              AND ABS("Stimp" - ?) < 0.000001
+              AND ABS("Elevation (cm)" - ?) < 0.000001
+            LIMIT 1
+            ''',
+            (direction, target_roll_cm, putt_m, stimp_m, elevation_cm),
+        ).fetchone()
+        if exact:
+            return float(exact[0]), "exact SQL lookup"
+
+        axis_values = {}
+        for column in ("Putt Length (m)", "Stimp", "Elevation (cm)"):
+            axis_values[column] = [
+                row[0]
+                for row in conn.execute(
+                    f'SELECT DISTINCT "{column}" FROM "{TABLE_NAME}" '
+                    f'WHERE "Direction" = ? AND ABS("Target Roll (cm)" - ?) < 0.000001 '
+                    f'ORDER BY "{column}"',
+                    (direction, target_roll_cm),
+                )
+            ]
+        if any(not values for values in axis_values.values()):
+            raise RuntimeError("No matching SQL rows found for prediction.")
+
+        p0, p1 = _bounds(axis_values["Putt Length (m)"], putt_m)
+        s0, s1 = _bounds(axis_values["Stimp"], stimp_m)
+        e0, e1 = _bounds(axis_values["Elevation (cm)"], elevation_cm)
+        corner_rows = conn.execute(
             f'''
             SELECT
                 "Putt Length (m)",
                 "Stimp",
-                "Direction",
                 "Elevation (cm)",
                 "Backstroke (cm)"
             FROM "{TABLE_NAME}"
             WHERE "Direction" = ?
+              AND ABS("Target Roll (cm)" - ?) < 0.000001
+              AND "Putt Length (m)" IN (?, ?)
+              AND "Stimp" IN (?, ?)
+              AND "Elevation (cm)" IN (?, ?)
             ''',
-            (direction,),
+            (direction, target_roll_cm, p0, p1, s0, s1, e0, e1),
         ).fetchall()
 
-    if not rows:
-        raise RuntimeError("No matching SQL rows found for prediction.")
+        lookup = {(p, s, e): back for p, s, e, back in corner_rows}
+        needed = {
+            (p, s, e)
+            for p in (p0, p1)
+            for s in (s0, s1)
+            for e in (e0, e1)
+        }
+        if needed.issubset(lookup):
+            pr = _ratio(p0, p1, putt_m)
+            sr = _ratio(s0, s1, stimp_m)
+            er = _ratio(e0, e1, elevation_cm)
+            interpolated_by_stimp = []
+            for p in (p0, p1):
+                interpolated_by_elevation = []
+                for s in (s0, s1):
+                    interpolated_by_elevation.append(
+                        _lerp(lookup[(p, s, e0)], lookup[(p, s, e1)], er)
+                    )
+                interpolated_by_stimp.append(
+                    _lerp(interpolated_by_elevation[0], interpolated_by_elevation[1], sr)
+                )
+            return _lerp(interpolated_by_stimp[0], interpolated_by_stimp[1], pr), "SQL interpolation"
 
-    scored = []
-    for row_putt_m, row_stimp_m, _, row_elev_cm, row_back_cm in rows:
-        distance = (
-            ((row_putt_m - putt_m) / 3.0) ** 2
-            + ((row_stimp_m - stimp_m) / 0.6) ** 2
-            + ((row_elev_cm - elevation_cm) / 15.0) ** 2
-        )
-        scored.append((distance, row_back_cm))
-    scored.sort(key=lambda item: item[0])
-
-    nearest = scored[:8]
-    if nearest[0][0] == 0:
-        return float(nearest[0][1])
-
-    weighted_total = 0.0
-    weight_sum = 0.0
-    for distance, back_cm in nearest:
-        weight = 1.0 / (distance + 1e-6)
-        weighted_total += weight * back_cm
-        weight_sum += weight
-    return float(weighted_total / weight_sum)
+        raise RuntimeError("SQL lookup grid is incomplete for these inputs.")
 
 
 def _swing(bpm: float, ratio: float, dist_ft: float, stimp: float, slope_pc: float) -> dict:
@@ -186,12 +247,14 @@ def _generate_wav(payload: dict) -> tuple[bytes, dict]:
 def predict(payload: dict) -> dict:
     putt_m = _clamp(_float(payload, "putt_m", 3.0), 0.5, 20.0)
     slope_pc = _clamp(_float(payload, "slope_pc", 2.5), 0.0, 5.0)
+    target_roll_cm = _clamp(_float(payload, "target_roll_cm", 30.0), 15.0, 30.0)
     elevation_cm = putt_m * slope_pc
     repeat_count = int(_clamp(_int(payload, "repeat_n", 1), 1, 20))
-    back_cm = _predict_backstroke(
+    back_cm, method = _predict_backstroke(
         putt_m,
-        _clamp(_float(payload, "stimp_ft", 10.0), 6.0, 15.0),
+        _clamp(_float(payload, "stimp_ft", 10.0), 6.0, 16.0),
         payload.get("direction", "Uphill"),
+        target_roll_cm,
         elevation_cm,
     )
     wav_bytes, swing = _generate_wav(payload)
@@ -203,6 +266,8 @@ def predict(payload: dict) -> dict:
         "backstroke_cm": round(back_cm, 2),
         "unit_label": "in" if unit == "inches" else "cm",
         "elevation_cm": round(elevation_cm, 2),
+        "target_roll_cm": round(target_roll_cm, 2),
+        "method": method,
         "repeat_count": repeat_count,
         "swing": {
             "backswing_time": round(swing["backswing_time"], 3),

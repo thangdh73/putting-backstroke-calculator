@@ -29,6 +29,16 @@ npx vercel --prod
 
 The Vercel app keeps the prediction flow and SoundTempo tone generation. No secrets are required.
 
+## Validate SQL against the Excel-derived source
+
+The deployed API reads from `data/backstroke_observations.sqlite`, which is generated from the same Excel-derived observations as `backstroke_data.parquet`. Run this check before deploying changes to the lookup data:
+
+```bash
+python3 scripts/validate_sql_lookup.py
+```
+
+The validator calls the same SQL lookup code used by `/api/predict` and verifies every source row returns the exact original backstroke value.
+
 ## Streamlit Community Cloud deployment
 
 Use Streamlit Community Cloud for the free hosted deployment. Vercel is optimized for static apps and serverless web functions, while this app needs Streamlit's long-running Python server and websocket connection.
